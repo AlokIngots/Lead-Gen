@@ -1,0 +1,199 @@
+{
+  "name": "Alok LMS — SES Reply Tracking",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "ses-reply",
+        "responseMode": "lastNode",
+        "options": { "responseData": "allEntries" }
+      },
+      "id": "webhook-trigger",
+      "name": "POST /webhook/ses-reply",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "ses-reply"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the SNS notification — supports raw SES payload or SNS-wrapped\nconst body = $input.first().json.body || $input.first().json;\n\nlet message = body;\nif (typeof body.Message === 'string') {\n  try { message = JSON.parse(body.Message); } catch (e) { /* keep body */ }\n} else if (body.Message) {\n  message = body.Message;\n}\n\nconst mail = message.mail || {};\n// SES inbound: source = the sender (the lead replying)\nlet email = mail.source || (mail.commonHeaders && mail.commonHeaders.from && mail.commonHeaders.from[0]);\nif (Array.isArray(email)) email = email[0];\nif (email && email.includes('<')) {\n  const m = email.match(/<([^>]+)>/);\n  if (m) email = m[1];\n}\n\nconst subject = (mail.commonHeaders && mail.commonHeaders.subject) || message.subject || null;\n\nreturn [{ json: { email: (email || '').toLowerCase().trim(), subject, raw_message_id: mail.messageId || null } }];"
+      },
+      "id": "parse-sns",
+      "name": "Parse SES/SNS body",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.LMS_API_URL}}/leads",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "q", "value": "={{$json.email}}" },
+            { "name": "page_size", "value": "1" }
+          ]
+        },
+        "options": { "timeout": 15000 }
+      },
+      "id": "find-lead",
+      "name": "GET /leads?q=email",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300],
+      "credentials": {
+        "httpHeaderAuth": { "id": "lms-bearer", "name": "LMS Bearer" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            { "id": "found", "leftValue": "={{$json.total}}", "rightValue": 0, "operator": { "type": "number", "operation": "gt" } }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "if-found",
+      "name": "Lead found?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.LMS_API_URL}}/events",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": {{$json.items[0].id}},\n  \"channel\": \"email\",\n  \"event_type\": \"replied\",\n  \"score_delta\": 30,\n  \"notes\": \"Email reply received via SES\"\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "log-reply",
+      "name": "POST /events replied",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 220],
+      "credentials": {
+        "httpHeaderAuth": { "id": "lms-bearer", "name": "LMS Bearer" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{$env.LMS_API_URL}}/leads/{{$json.items[0].id}}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={ \"status\": \"engaged\" }",
+        "options": { "timeout": 15000 }
+      },
+      "id": "patch-lead",
+      "name": "PATCH lead → engaged",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1360, 220],
+      "credentials": {
+        "httpHeaderAuth": { "id": "lms-bearer", "name": "LMS Bearer" }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{$env.LMS_API_URL}}/leads/{{$json.items[0].id}}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "fetch-lead",
+      "name": "GET lead (for SC info)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1580, 220],
+      "credentials": {
+        "httpHeaderAuth": { "id": "lms-bearer", "name": "LMS Bearer" }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{$env.LMS_API_URL}}/users",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "role", "value": "sc" }
+          ]
+        },
+        "options": { "timeout": 15000 }
+      },
+      "id": "fetch-scs",
+      "name": "GET /users role=sc",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1800, 220],
+      "credentials": {
+        "httpHeaderAuth": { "id": "lms-bearer", "name": "LMS Bearer" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.interakt.ai/v1/public/message/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Basic {{$env.INTERAKT_API_KEY}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"countryCode\": \"+91\",\n  \"phoneNumber\": \"{{ ($json.find(u => u.emp_code === $('GET lead (for SC info)').item.json.assigned_sc) || {}).phone || '' }}\",\n  \"type\": \"Text\",\n  \"data\": {\n    \"message\": \"Reply received from {{$('GET lead (for SC info)').item.json.company_name}} ({{$('GET lead (for SC info)').item.json.email}}). Log in to LMS to follow up: https://lms.alokindia.co.in/leads/{{$('GET lead (for SC info)').item.json.id}}\"\n  }\n}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "notify-sc",
+      "name": "Interakt — Notify SC",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2020, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true }"
+      },
+      "id": "ok-found",
+      "name": "200 OK (matched)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2240, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"matched\": false }"
+      },
+      "id": "ok-nomatch",
+      "name": "200 OK (no match)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1140, 400]
+    }
+  ],
+  "connections": {
+    "POST /webhook/ses-reply": { "main": [[{ "node": "Parse SES/SNS body", "type": "main", "index": 0 }]] },
+    "Parse SES/SNS body":     { "main": [[{ "node": "GET /leads?q=email", "type": "main", "index": 0 }]] },
+    "GET /leads?q=email":     { "main": [[{ "node": "Lead found?",        "type": "main", "index": 0 }]] },
+    "Lead found?": {
+      "main": [
+        [{ "node": "POST /events replied", "type": "main", "index": 0 }],
+        [{ "node": "200 OK (no match)",    "type": "main", "index": 0 }]
+      ]
+    },
+    "POST /events replied":    { "main": [[{ "node": "PATCH lead → engaged", "type": "main", "index": 0 }]] },
+    "PATCH lead → engaged":    { "main": [[{ "node": "GET lead (for SC info)","type": "main", "index": 0 }]] },
+    "GET lead (for SC info)":  { "main": [[{ "node": "GET /users role=sc",   "type": "main", "index": 0 }]] },
+    "GET /users role=sc":      { "main": [[{ "node": "Interakt — Notify SC", "type": "main", "index": 0 }]] },
+    "Interakt — Notify SC":    { "main": [[{ "node": "200 OK (matched)",     "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false,
+  "tags": ["alok-lms", "ses", "reply-tracking"]
+}

@@ -1,0 +1,329 @@
+{
+  "name": "Alok LMS — Drip Scheduler",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            { "field": "hours", "hoursInterval": 1 }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.LMS_API_URL}}/drip/due",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": { "timeout": 30000 }
+      },
+      "id": "fetch-due",
+      "name": "GET /drip/due",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 300],
+      "credentials": {
+        "httpHeaderAuth": { "id": "lms-bearer", "name": "LMS Bearer" }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "split-items",
+      "name": "Split out items",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+                "conditions": [
+                  { "id": "c-email", "leftValue": "={{$json.channel}}", "rightValue": "email", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "email"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+                "conditions": [
+                  { "id": "c-li", "leftValue": "={{$json.channel}}", "rightValue": "linkedin", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "linkedin"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+                "conditions": [
+                  { "id": "c-wa", "leftValue": "={{$json.channel}}", "rightValue": "whatsapp", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "whatsapp"
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+                "conditions": [
+                  { "id": "c-call", "leftValue": "={{$json.channel}}", "rightValue": "call_alert", "operator": { "type": "string", "operation": "equals" } }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "call_alert"
+            }
+          ]
+        }
+      },
+      "id": "channel-switch",
+      "name": "Switch by channel",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [900, 300]
+    },
+
+    {
+      "parameters": {
+        "fromEmail": "exports@alokindia.com",
+        "toEmail": "={{$json.email}}",
+        "subject": "={{ ($json.template_subject || '').replace('{{contact_name}}', $json.contact_name || '').replace('{{company}}', $json.company || '') }}",
+        "text": "={{ ($json.template_body || '').replace('{{contact_name}}', $json.contact_name || '').replace('{{company}}', $json.company || '') }}",
+        "options": {}
+      },
+      "id": "ses-send",
+      "name": "AWS SES — Send email",
+      "type": "n8n-nodes-base.awsSes",
+      "typeVersion": 1,
+      "position": [1180, 60],
+      "credentials": {
+        "aws": { "id": "aws-ses", "name": "AWS SES" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.LMS_API_URL}}/drip/log",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": {{$json.lead_id}},\n  \"channel\": \"email\",\n  \"event_type\": \"sent\",\n  \"step_id\": {{$json.campaign_step_id}},\n  \"campaign_id\": {{$json.campaign_id}}\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "log-email",
+      "name": "Log email sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 60],
+      "credentials": {
+        "httpHeaderAuth": { "id": "lms-bearer", "name": "LMS Bearer" }
+      }
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api27.unipile.com:15765/api/v1/linkedin/invitation",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-API-KEY", "value": "={{$env.UNIPILE_API_KEY}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"account_id\": \"je2GwI0gQdeg_j1f-RjHTQ\",\n  \"linkedin_member_url\": \"{{$json.linkedin_url}}\",\n  \"message\": \"{{ ($json.template_body || '').replace('{{contact_name}}', $json.contact_name || '').replace('{{company}}', $json.company || '') }}\"\n}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "li-send",
+      "name": "Unipile — LinkedIn invite",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.LMS_API_URL}}/drip/log",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": {{$json.lead_id}},\n  \"channel\": \"linkedin\",\n  \"event_type\": \"sent\",\n  \"step_id\": {{$json.campaign_step_id}},\n  \"campaign_id\": {{$json.campaign_id}}\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "log-li",
+      "name": "Log linkedin sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 220],
+      "credentials": {
+        "httpHeaderAuth": { "id": "lms-bearer", "name": "LMS Bearer" }
+      }
+    },
+
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            { "id": "wa-gate", "leftValue": "={{$json.score}}", "rightValue": 30, "operator": { "type": "number", "operation": "gte" } }
+          ],
+          "combinator": "or"
+        }
+      },
+      "id": "wa-gate",
+      "name": "Score ≥ 30?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1180, 380]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.interakt.ai/v1/public/message/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Basic {{$env.INTERAKT_API_KEY}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"countryCode\": \"+91\",\n  \"phoneNumber\": \"{{$json.phone}}\",\n  \"type\": \"Template\",\n  \"template\": {\n    \"name\": \"drip_intro\",\n    \"languageCode\": \"en\",\n    \"bodyValues\": [\"{{$json.contact_name}}\", \"{{$json.company}}\"]\n  }\n}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "wa-send",
+      "name": "Interakt — WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 360]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.LMS_API_URL}}/drip/log",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": {{$json.lead_id}},\n  \"channel\": \"whatsapp\",\n  \"event_type\": \"sent\",\n  \"step_id\": {{$json.campaign_step_id}},\n  \"campaign_id\": {{$json.campaign_id}}\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "log-wa",
+      "name": "Log whatsapp sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1620, 360],
+      "credentials": {
+        "httpHeaderAuth": { "id": "lms-bearer", "name": "LMS Bearer" }
+      }
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.interakt.ai/v1/public/message/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Basic {{$env.INTERAKT_API_KEY}}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"countryCode\": \"{{$json.assigned_sc_country_code || '+91'}}\",\n  \"phoneNumber\": \"{{$json.assigned_sc_phone}}\",\n  \"type\": \"Text\",\n  \"data\": {\n    \"message\": \"Call alert: {{$json.company}} ({{$json.contact_name}}) is ready for a call. Score: {{$json.score}}. Email: {{$json.email}}\"\n  }\n}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "call-send",
+      "name": "Interakt — Call alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 540]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.LMS_API_URL}}/drip/log",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": {{$json.lead_id}},\n  \"channel\": \"call_alert\",\n  \"event_type\": \"sent\",\n  \"step_id\": {{$json.campaign_step_id}},\n  \"campaign_id\": {{$json.campaign_id}}\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "log-call",
+      "name": "Log call alert sent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 540],
+      "credentials": {
+        "httpHeaderAuth": { "id": "lms-bearer", "name": "LMS Bearer" }
+      }
+    },
+
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.LMS_API_URL}}/drip/advance",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"lead_id\": {{$json.lead_id}},\n  \"campaign_id\": {{$json.campaign_id}}\n}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "advance",
+      "name": "Advance drip step",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1840, 300],
+      "credentials": {
+        "httpHeaderAuth": { "id": "lms-bearer", "name": "LMS Bearer" }
+      }
+    }
+  ],
+  "connections": {
+    "Every hour":          { "main": [[{ "node": "GET /drip/due",       "type": "main", "index": 0 }]] },
+    "GET /drip/due":       { "main": [[{ "node": "Split out items",     "type": "main", "index": 0 }]] },
+    "Split out items":     { "main": [[{ "node": "Switch by channel",   "type": "main", "index": 0 }]] },
+
+    "Switch by channel": {
+      "main": [
+        [{ "node": "AWS SES — Send email",     "type": "main", "index": 0 }],
+        [{ "node": "Unipile — LinkedIn invite","type": "main", "index": 0 }],
+        [{ "node": "Score ≥ 30?",              "type": "main", "index": 0 }],
+        [{ "node": "Interakt — Call alert",    "type": "main", "index": 0 }]
+      ]
+    },
+
+    "AWS SES — Send email":      { "main": [[{ "node": "Log email sent",     "type": "main", "index": 0 }]] },
+    "Log email sent":            { "main": [[{ "node": "Advance drip step",  "type": "main", "index": 0 }]] },
+
+    "Unipile — LinkedIn invite": { "main": [[{ "node": "Log linkedin sent",  "type": "main", "index": 0 }]] },
+    "Log linkedin sent":         { "main": [[{ "node": "Advance drip step",  "type": "main", "index": 0 }]] },
+
+    "Score ≥ 30?": {
+      "main": [
+        [{ "node": "Interakt — WhatsApp",  "type": "main", "index": 0 }],
+        [{ "node": "Advance drip step",    "type": "main", "index": 0 }]
+      ]
+    },
+    "Interakt — WhatsApp":       { "main": [[{ "node": "Log whatsapp sent",  "type": "main", "index": 0 }]] },
+    "Log whatsapp sent":         { "main": [[{ "node": "Advance drip step",  "type": "main", "index": 0 }]] },
+
+    "Interakt — Call alert":     { "main": [[{ "node": "Log call alert sent","type": "main", "index": 0 }]] },
+    "Log call alert sent":       { "main": [[{ "node": "Advance drip step",  "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false,
+  "tags": ["alok-lms", "drip"]
+}
