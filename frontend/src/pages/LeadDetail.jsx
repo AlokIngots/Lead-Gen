@@ -482,6 +482,10 @@ export default function LeadDetail() {
                 <a href={`mailto:${lead.email}`} className="mono" style={{ color: 'var(--blue)', fontSize: 12, textDecoration: 'none' }}>
                   ✉ {lead.email}
                 </a>
+              ) : lead.linkedin_url && !lead.has_email ? (
+                <div style={{ fontSize: 12, color: '#7132e8', fontStyle: 'italic', fontWeight: 600 }}>
+                  ✉ LinkedIn only — email pending
+                </div>
               ) : (
                 <div className="muted" style={{ fontSize: 12 }}>✉ —</div>
               )}

@@ -19,9 +19,30 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
 
 from database import SessionLocal  # noqa: E402
-from models import Lead, INDUSTRY_SEGMENTS  # noqa: E402
+from models import Lead  # noqa: E402
 
-SHEET_ID = "10Ht4PZGFJ1SjkwvzzbvtiLf7MJJ2Kq_U6GI7koAvhPA"
+SHEETS = [
+    {
+        "sheet_id": "10Ht4PZGFJ1SjkwvzzbvtiLf7MJJ2Kq_U6GI7koAvhPA",
+        "industry_segment": "pumps",
+        "name": "All Data Pumps",
+    },
+    {
+        "sheet_id": "1VLM2kE0yOP2d37NP4gEEzJols3A4CCyf_ONz1yjZIaY",
+        "industry_segment": "valves",
+        "name": "All_Valves_Top to bottom",
+    },
+    {
+        "sheet_id": "1XrdYnAkwMto2htc1nbiYcQh_kn7PHVWFZitoMjEt-ic",
+        "industry_segment": "cnc",
+        "name": "CNC machined sheet",
+    },
+    {
+        "sheet_id": "1EiTUEEdxI-fxUQxhuSfYzxaWQl-4bFF0revYHjFiFBI",
+        "industry_segment": "defense",
+        "name": "Defense_Buyers",
+    },
+]
 SERVICE_ACCOUNT_FILE = "/Users/exports/alok-steels-service-account.json"
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -31,35 +52,16 @@ SCOPES = [
 DEFAULT_STATUS = "raw"
 BATCH_SIZE = 1000
 
-# (worksheet title, source value) — order matters: earlier tabs win on dedup.
-TABS: list[tuple[str, str]] = [
-    ("Apollo_scrapped", "apollo"),
-    ("Scrapping Data", "apollo"),
-    ("Lusha_old_data", "lusha"),
-    ("Contact", "manual"),
-]
-
 COLUMN_ALIASES: dict[str, tuple[str, ...]] = {
     "email":            ("emails", "all emails", "email", "email address", "e-mail"),
     "contact_name":     ("full_name", "full name", "name", "contact person", "contact name"),
     "company_name":     ("company_name", "company name", "company", "company_name ", "organization", "organisation"),
     "phone":            ("company_phone", "phone", "phone number", "mobile", "contact", "all phones", "contact_number", "contact number"),
     "country":          ("country",),
-    "industry_segment": ("company_industry", "industry", "segment", "industry/segment", "industry segment"),
     "linkedin_url":     ("linkedin_url", "linkedin", "linkedin url", "linkedin profile", "company_linkedin", "linkedin company page"),
 }
 
 LINKEDIN_MAX_LEN = 500
-
-SEGMENT_KEYWORDS: dict[str, tuple[str, ...]] = {
-    "pumps":        ("pump",),
-    "valves":       ("valve",),
-    "pneumatics":   ("pneumatic",),
-    "defense":      ("defense", "defence", "military", "ordnance", "aerospace"),
-    "stockholders": ("stockholder", "stockist", "steel stock", "distribution", "distributor"),
-    "cnc":          ("cnc", "machining", "machine shop", "machine tool"),
-    "forging":      ("forge", "forging"),
-}
 
 EMAIL_SPLIT_RE = re.compile(r"[,;\s]+")
 EMAIL_VALID_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -109,24 +111,14 @@ def clean_phone(raw: str) -> Optional[str]:
     return first[:PHONE_MAX_LEN]
 
 
-def detect_segment(company_name: str, raw_segment: str) -> str:
-    raw = _norm(raw_segment)
-    if raw in INDUSTRY_SEGMENTS:
-        return raw
-    haystack = f"{company_name} {raw_segment}".lower()
-    for segment, keywords in SEGMENT_KEYWORDS.items():
-        if any(kw in haystack for kw in keywords):
-            return segment
-    return "others"
 
-
-def open_sheet():
+def open_sheet(sheet_id: str):
     if not os.path.exists(SERVICE_ACCOUNT_FILE):
         raise FileNotFoundError(
             f"Service account key not found at {SERVICE_ACCOUNT_FILE}"
         )
     creds = Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-    return gspread.authorize(creds).open_by_key(SHEET_ID)
+    return gspread.authorize(creds).open_by_key(sheet_id)
 
 
 def chunks(seq: list[dict], size: int) -> Iterable[list[dict]]:
@@ -134,89 +126,146 @@ def chunks(seq: list[dict], size: int) -> Iterable[list[dict]]:
         yield seq[i : i + size]
 
 
+def _clean_linkedin(raw: str) -> str | None:
+    url = raw.strip()[:LINKEDIN_MAX_LEN] if raw else ""
+    if not url or "linkedin.com" not in url.lower():
+        return None
+    return url
+
+
 def main() -> int:
-    sh = open_sheet()
     db = SessionLocal()
-    grand_total = grand_imported = grand_dup = grand_blank = 0
-    per_tab: list[tuple[str, int, int, int, int]] = []
+    grand_imported = grand_dup = grand_linkedin = 0
+    per_sheet: list[tuple[str, int, int, int]] = []
 
     try:
+        # Dedup sets: emails + linkedin URLs already in DB
         existing_emails = {
             e.lower()
             for (e,) in db.query(Lead.email).filter(Lead.email.isnot(None)).all()
             if e
         }
-        seen: set[str] = set()
-        print(f"Existing emails in DB: {len(existing_emails)}")
+        existing_linkedins = {
+            u.lower()
+            for (u,) in db.query(Lead.linkedin_url).filter(Lead.linkedin_url.isnot(None)).all()
+            if u
+        }
+        seen_emails: set[str] = set()
+        seen_linkedins: set[str] = set()
+        print(f"Existing in DB: {len(existing_emails)} emails, {len(existing_linkedins)} linkedin URLs")
 
-        for title, source in TABS:
+        for sheet_cfg in SHEETS:
+            sheet_id = sheet_cfg["sheet_id"]
+            sheet_segment = sheet_cfg["industry_segment"]
+            sheet_name = sheet_cfg["name"]
+
+            print(f"\n{'='*60}")
+            print(f"Sheet: {sheet_name} (segment={sheet_segment})")
+            print(f"{'='*60}")
+
             try:
-                ws = sh.worksheet(title)
-            except gspread.WorksheetNotFound:
-                print(f"[skip] worksheet not found: {title}")
+                sh = open_sheet(sheet_id)
+            except Exception as exc:
+                print(f"[skip] could not open sheet {sheet_name}: {exc}")
+                per_sheet.append((sheet_name, 0, 0, 0))
                 continue
 
-            print(f"\n>>> Reading: {title} (source={source})")
-            rows = ws.get_all_values()
-            if not rows:
-                print("   (empty)")
-                continue
-            headers, *data_rows = rows
-            hmap = build_header_map(headers)
-            if hmap["email"] is None:
-                print(f"   [skip] no email column. headers={headers}")
-                continue
+            sheet_imported = sheet_dup = sheet_linkedin = 0
 
-            total = len(data_rows)
-            imported = dup = blank = 0
-            pending: list[dict] = []
-
-            for row in data_rows:
-                email = first_email(cell(row, hmap["email"]))
-                if not email:
-                    blank += 1
+            for ws in sh.worksheets():
+                title = ws.title
+                print(f"\n>>> Reading tab: {title}")
+                rows = ws.get_all_values()
+                if not rows:
+                    print("   (empty)")
                     continue
-                if email in existing_emails or email in seen:
-                    dup += 1
+                headers, *data_rows = rows
+                hmap = build_header_map(headers)
+
+                has_email_col = hmap["email"] is not None
+                has_linkedin_col = hmap["linkedin_url"] is not None
+
+                if not has_email_col and not has_linkedin_col:
+                    print(f"   [skip] no email or linkedin column. headers={headers[:10]}")
                     continue
 
-                company_name = cell(row, hmap["company_name"])
-                pending.append({
-                    "company_name":     company_name or "(unknown)",
-                    "contact_name":     cell(row, hmap["contact_name"]) or None,
-                    "email":            email,
-                    "phone":            clean_phone(cell(row, hmap["phone"])),
-                    "country":          cell(row, hmap["country"]) or "India",
-                    "industry_segment": detect_segment(company_name, cell(row, hmap["industry_segment"])),
-                    "linkedin_url":     (cell(row, hmap["linkedin_url"])[:LINKEDIN_MAX_LEN] or None),
-                    "source":           source,
-                    "status":           DEFAULT_STATUS,
-                })
-                seen.add(email)
-                imported += 1
+                pending: list[dict] = []
 
-            for batch in chunks(pending, BATCH_SIZE):
-                db.bulk_insert_mappings(Lead, batch)
-                db.commit()
+                for row in data_rows:
+                    email = first_email(cell(row, hmap["email"])) if has_email_col else ""
+                    linkedin = _clean_linkedin(cell(row, hmap["linkedin_url"])) if has_linkedin_col else None
 
-            print(f"   total={total} imported={imported} dup={dup} blank={blank}")
-            per_tab.append((title, total, imported, dup, blank))
-            grand_total += total
-            grand_imported += imported
-            grand_dup += dup
-            grand_blank += blank
+                    if email:
+                        # Dedup by email
+                        if email in existing_emails or email in seen_emails:
+                            sheet_dup += 1
+                            continue
+                        company_name = cell(row, hmap["company_name"])
+                        pending.append({
+                            "company_name":     company_name or "(unknown)",
+                            "contact_name":     cell(row, hmap["contact_name"]) or None,
+                            "email":            email,
+                            "has_email":        True,
+                            "phone":            clean_phone(cell(row, hmap["phone"])),
+                            "country":          cell(row, hmap["country"]) or "India",
+                            "industry_segment": sheet_segment,
+                            "linkedin_url":     linkedin,
+                            "source":           "google_sheet",
+                            "status":           DEFAULT_STATUS,
+                        })
+                        seen_emails.add(email)
+                        sheet_imported += 1
+
+                    elif linkedin:
+                        # No email but has linkedin — import as profile-only lead
+                        li_key = linkedin.lower()
+                        if li_key in existing_linkedins or li_key in seen_linkedins:
+                            sheet_dup += 1
+                            continue
+                        company_name = cell(row, hmap["company_name"])
+                        pending.append({
+                            "company_name":     company_name or "(unknown)",
+                            "contact_name":     cell(row, hmap["contact_name"]) or None,
+                            "email":            None,
+                            "has_email":        False,
+                            "phone":            clean_phone(cell(row, hmap["phone"])),
+                            "country":          cell(row, hmap["country"]) or "India",
+                            "industry_segment": sheet_segment,
+                            "linkedin_url":     linkedin,
+                            "source":           "google_sheet",
+                            "status":           DEFAULT_STATUS,
+                        })
+                        seen_linkedins.add(li_key)
+                        sheet_linkedin += 1
+                        sheet_imported += 1
+
+                    else:
+                        # No email, no linkedin — skip
+                        continue
+
+                for batch in chunks(pending, BATCH_SIZE):
+                    db.bulk_insert_mappings(Lead, batch)
+                    db.commit()
+
+                print(f"   tab rows={len(data_rows)} imported={len(pending)}")
+
+            per_sheet.append((sheet_name, sheet_imported, sheet_dup, sheet_linkedin))
+            grand_imported += sheet_imported
+            grand_dup += sheet_dup
+            grand_linkedin += sheet_linkedin
 
     finally:
         db.close()
 
-    print("\n" + "=" * 60)
-    print(f"{'tab':<25} {'total':>8} {'imp':>8} {'dup':>8} {'blank':>8}")
-    print("-" * 60)
-    for title, t, i, d, b in per_tab:
-        print(f"{title:<25} {t:>8} {i:>8} {d:>8} {b:>8}")
-    print("-" * 60)
-    print(f"{'TOTAL':<25} {grand_total:>8} {grand_imported:>8} {grand_dup:>8} {grand_blank:>8}")
-    print("=" * 60)
+    # ── Summary ──
+    print("\n")
+    label_width = max(len(name) for name, *_ in per_sheet) + 2
+    for name, imp, dup, li in per_sheet:
+        label = f"{name}:"
+        print(f"{label:<{label_width}} {imp:>6} imported | {dup:>6} duplicates | {li:>6} linkedin-only")
+    print("\u2500" * 60)
+    label = "TOTAL:"
+    print(f"{label:<{label_width}} {grand_imported:>6} imported | {grand_dup:>6} duplicates | {grand_linkedin:>6} linkedin-only")
     return 0
 
 

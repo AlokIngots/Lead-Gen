@@ -45,6 +45,7 @@ class Lead(Base):
     alt_phone = Column(String(32))
     website = Column(String(255))
     linkedin_url = Column(String(500))
+    has_email = Column(Boolean, nullable=False, default=False)
 
     address_line1 = Column(String(255))
     address_line2 = Column(String(255))

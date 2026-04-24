@@ -6,6 +6,7 @@ const SECTIONS = [
     title: 'Overview',
     items: [
       { to: '/dashboard', label: 'Dashboard', icon: '\u25A2' },
+      { to: '/my-tasks',  label: 'My Tasks',  icon: '\u2713' },
     ],
   },
   {
@@ -13,6 +14,7 @@ const SECTIONS = [
     items: [
       { to: '/leads',         label: 'All Leads',  icon: '\u25CE' },
       { to: '/leads?qualified=1', label: 'Qualified', icon: '\u25C9', match: '/leads' },
+      { to: '/duplicates',        label: 'Duplicates', icon: '\u2687', adminOnly: true },
     ],
   },
   {
@@ -61,7 +63,7 @@ export default function Sidebar() {
         {SECTIONS.map(section => (
           <div key={section.title} className="sidebar-section">
             <div className="sidebar-section-title">{section.title}</div>
-            {section.items.map(item => (
+            {section.items.filter(item => !item.adminOnly || user?.role === 'admin').map(item => (
               <NavLink
                 key={item.to + item.label}
                 to={item.to}

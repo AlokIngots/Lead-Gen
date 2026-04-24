@@ -32,9 +32,11 @@ api.interceptors.response.use(
 )
 
 export const AuthAPI = {
-  login: (emp_code, password) =>
-    api.post('/auth/login', { emp_code, password }).then(r => r.data),
-  me:    () => api.get('/auth/me').then(r => r.data),
+  sendOTP: (emp_code) =>
+    api.post('/auth/login', { emp_code }).then(r => r.data),
+  verifyOTP: (session_id, otp) =>
+    api.post('/auth/verify-otp', { session_id, otp }).then(r => r.data),
+  me: () => api.get('/auth/me').then(r => r.data),
 }
 
 export const LeadsAPI = {
@@ -42,6 +44,8 @@ export const LeadsAPI = {
   get:  (id)     => api.get(`/leads/${id}`).then(r => r.data),
   patch:(id, b)  => api.patch(`/leads/${id}`, b).then(r => r.data),
   bulkPatch: (body) => api.patch('/leads/bulk', body).then(r => r.data),
+  autoAssign: (body) => api.post('/leads/auto-assign', body).then(r => r.data),
+  myTasks: () => api.get('/leads/my-tasks').then(r => r.data),
 }
 
 export const CampaignsAPI = {
@@ -99,6 +103,12 @@ export const NotificationsAPI = {
   unreadCount: (emp_code) => api.get('/notifications/unread-count', { params: { emp_code } }).then(r => r.data),
   markRead:    (id) => api.post(`/notifications/mark-read/${id}`).then(r => r.data),
   markAllRead: (emp_code) => api.post('/notifications/mark-all-read', null, { params: { emp_code } }).then(r => r.data),
+}
+
+export const DuplicatesAPI = {
+  stats: () => api.get('/duplicates/stats').then(r => r.data),
+  scan:  (params) => api.get('/duplicates/scan', { params }).then(r => r.data),
+  merge: (body) => api.post('/duplicates/merge', body).then(r => r.data),
 }
 
 export const AnalyticsAPI = {

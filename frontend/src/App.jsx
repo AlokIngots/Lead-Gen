@@ -10,6 +10,8 @@ import Campaigns from './pages/Campaigns.jsx'
 import Templates from './pages/Templates.jsx'
 import Analytics from './pages/Analytics.jsx'
 import Import from './pages/Import.jsx'
+import Duplicates from './pages/Duplicates.jsx'
+import MyTasks from './pages/MyTasks.jsx'
 
 function Shell({ children }) {
   return (
@@ -41,6 +43,8 @@ export default function App() {
                 <Route path="/templates" element={<Templates />} />
                 <Route path="/analytics" element={<Analytics />} />
                 <Route path="/import" element={<Import />} />
+                <Route path="/duplicates" element={<Duplicates />} />
+                <Route path="/my-tasks" element={<MyTasks />} />
               </Routes>
             </Shell>
           </ProtectedRoute>

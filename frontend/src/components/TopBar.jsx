@@ -3,12 +3,14 @@ import { useAuth } from '../context/AuthContext.jsx'
 import NotificationBell from './NotificationBell.jsx'
 
 const TITLES = [
+  { match: /^\/my-tasks/, title: 'My Tasks' },
   { match: /^\/dashboard/, title: 'Dashboard' },
   { match: /^\/leads\/[^/]+/, title: 'Lead Detail' },
   { match: /^\/leads/,    title: 'Leads' },
   { match: /^\/campaigns/, title: 'Campaigns' },
   { match: /^\/templates/, title: 'Templates' },
   { match: /^\/analytics/, title: 'Analytics' },
+  { match: /^\/duplicates/, title: 'Duplicates' },
   { match: /^\/import/,    title: 'Import leads' },
 ]
 

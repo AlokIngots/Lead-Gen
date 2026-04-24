@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import leads, campaigns, events, import_leads, analytics, auth, templates, users, drip, notifications
+from routers import leads, campaigns, events, import_leads, analytics, auth, templates, users, drip, notifications, duplicates
 
 load_dotenv()
 
@@ -47,3 +47,4 @@ app.include_router(templates.router,    prefix="/templates", tags=["templates"])
 app.include_router(users.router,        prefix="/users",     tags=["users"])
 app.include_router(drip.router,         prefix="/drip",      tags=["drip"])
 app.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
+app.include_router(duplicates.router,    prefix="/duplicates",    tags=["duplicates"])

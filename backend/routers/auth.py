@@ -1,4 +1,4 @@
-import bcrypt
+import os
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -8,28 +8,37 @@ from database import get_db
 from models import V2User
 from auth_deps import create_access_token, get_current_user
 from services.rate_limit import RateLimiter
-import os
+from services.otp_service import (
+    generate_otp,
+    generate_session_id,
+    send_message,
+    store_otp_session,
+    verify_otp_session,
+    cleanup_expired_sessions,
+)
 
 router = APIRouter()
 
 _login_limiter = RateLimiter(
-    max_attempts=int(os.getenv("LOGIN_MAX_ATTEMPTS", "10")),
-    window_seconds=int(os.getenv("LOGIN_WINDOW_SECONDS", "300")),
+    max_attempts=int(os.getenv("OTP_MAX_ATTEMPTS", "5")),
+    window_seconds=int(os.getenv("OTP_WINDOW_SECONDS", "300")),
 )
+
+_verify_limiter = RateLimiter(
+    max_attempts=int(os.getenv("OTP_VERIFY_MAX_ATTEMPTS", "5")),
+    window_seconds=int(os.getenv("OTP_VERIFY_WINDOW_SECONDS", "300")),
+)
+
+DEV_RETURN_OTP = os.getenv("DEV_RETURN_OTP", "false").strip().lower() == "true"
 
 
 class LoginRequest(BaseModel):
     emp_code: str = Field(..., min_length=1, max_length=32)
-    password: str = Field(..., min_length=1)
 
 
-def _verify_password(plain: str, hashed: Optional[str]) -> bool:
-    if not hashed:
-        return False
-    try:
-        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-    except Exception:
-        return False
+class VerifyOtpRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    otp: str = Field(..., min_length=6, max_length=6)
 
 
 @router.post("/login")
@@ -38,16 +47,59 @@ async def login(
     request: Request,
     db: Session = Depends(get_db),
 ):
+    cleanup_expired_sessions()
+
     client_ip = request.client.host if request.client else "unknown"
     key = f"login:{payload.emp_code}:{client_ip}"
     if not _login_limiter.allow(key):
-        raise HTTPException(status_code=429, detail="Too many login attempts. Try later.")
+        raise HTTPException(status_code=429, detail="Too many OTP requests. Try later.")
 
     user = db.query(V2User).filter(V2User.ecode == payload.emp_code).first()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="Invalid employee code or password")
-    if not _verify_password(payload.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid employee code or password")
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="User is inactive")
+    if not user.phone:
+        raise HTTPException(status_code=400, detail="No phone number on file for this user")
+
+    otp = generate_otp()
+    session_id = generate_session_id()
+
+    try:
+        send_message(user.phone, otp, user.country_code)
+    except Exception:
+        raise HTTPException(status_code=502, detail="Failed to send OTP")
+
+    store_otp_session(session_id, user.ecode, otp, user.phone)
+
+    last4 = user.phone[-4:] if len(user.phone) >= 4 else user.phone
+    resp = {
+        "message": f"OTP sent to ******{last4}",
+        "session_id": session_id,
+    }
+    if DEV_RETURN_OTP:
+        resp["otp"] = otp
+    return resp
+
+
+@router.post("/verify-otp")
+async def verify_otp(
+    payload: VerifyOtpRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    client_ip = request.client.host if request.client else "unknown"
+    key = f"verify:{payload.session_id}:{client_ip}"
+    if not _verify_limiter.allow(key):
+        raise HTTPException(status_code=429, detail="Too many OTP verification attempts. Try later.")
+
+    ecode = verify_otp_session(payload.session_id, payload.otp)
+    if not ecode:
+        raise HTTPException(status_code=400, detail="Invalid or expired OTP")
+
+    user = db.query(V2User).filter(V2User.ecode == ecode).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
 
     token = create_access_token(user.ecode)
     return {

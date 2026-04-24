@@ -303,7 +303,11 @@ export default function LeadsList() {
                           {lead.dnc_flag && <span className="seg-tag" style={{ marginLeft: 8, color: '#e02020', background: '#fde8e8' }}>DNC</span>}
                           {lead.bounce_flag && <span className="seg-tag" style={{ marginLeft: 6, color: '#c97c08', background: '#fcf2dc' }}>BOUNCE</span>}
                         </div>
-                        <div className="company-meta">{lead.email || lead.phone || '—'}</div>
+                        <div className="company-meta">
+                          {lead.email || lead.phone || (lead.linkedin_url && !lead.has_email
+                            ? <span style={{ color: '#7132e8', fontStyle: 'italic' }}>LinkedIn only — email pending</span>
+                            : '—')}
+                        </div>
                       </div>
                     </div>
                   </td>
