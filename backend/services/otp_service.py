@@ -1,19 +1,32 @@
+"""OTP generation, delivery, and database-backed session management.
+
+Sessions are stored in the `otp_sessions` table so they work correctly
+across multiple uvicorn workers. OTPs are hashed before storage.
+"""
+import hashlib
 import os
 import re
 import secrets
 import string
 import urllib.parse
 import logging
-from typing import Dict, Optional
+from typing import Optional
 from datetime import datetime, timedelta
 
 import requests
 from dotenv import load_dotenv
+from sqlalchemy.orm import Session
 
 load_dotenv()
 
-otp_sessions: Dict[str, dict] = {}
 logger = logging.getLogger("lms.otp")
+
+MAX_VERIFY_ATTEMPTS = 5  # lock session after this many wrong OTPs
+
+
+def _hash_otp(otp: str) -> str:
+    """One-way hash so the OTP is never stored in plaintext."""
+    return hashlib.sha256(otp.encode()).hexdigest()
 
 
 def generate_otp() -> str:
@@ -21,7 +34,7 @@ def generate_otp() -> str:
 
 
 def generate_session_id() -> str:
-    return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
+    return secrets.token_urlsafe(32)
 
 
 def _sms_mode() -> str:
@@ -181,7 +194,7 @@ def send_message(phone_no: str, otp: str, country_code: Optional[str] = None) ->
 
     if mode == "mock":
         masked_phone = f"***{str(phone_no)[-4:]}" if phone_no else "***"
-        logger.info("OTP mock mode | phone=%s | OTP=%s", masked_phone, otp)
+        logger.info("OTP mock mode | phone=%s", masked_phone)
         print(f"[LMS OTP MOCK] phone={masked_phone} otp={otp}")
         return otp
 
@@ -199,33 +212,49 @@ def send_message(phone_no: str, otp: str, country_code: Optional[str] = None) ->
     return _send_sms_live(phone_no, otp)
 
 
-def store_otp_session(session_id: str, ecode: str, otp: str, phone_number: str) -> None:
-    expiry = datetime.now() + timedelta(minutes=5)
-    otp_sessions[session_id] = {
-        "ecode": ecode,
-        "otp": otp,
-        "phone_number": phone_number,
-        "created_at": datetime.now(),
-        "expires_at": expiry,
-        "verified": False,
-    }
+# ─── Database-backed session management ──────────────────────────────────────
+
+def store_otp_session(db: Session, session_id: str, ecode: str, otp: str, phone_number: str) -> None:
+    from models import OtpSession
+    expiry = datetime.utcnow() + timedelta(minutes=5)
+    session = OtpSession(
+        session_id=session_id,
+        ecode=ecode,
+        otp_hash=_hash_otp(otp),
+        phone_number=phone_number,
+        expires_at=expiry,
+    )
+    db.add(session)
+    db.commit()
 
 
-def verify_otp_session(session_id: str, provided_otp: str) -> Optional[str]:
-    if session_id not in otp_sessions:
+def verify_otp_session(db: Session, session_id: str, provided_otp: str) -> Optional[str]:
+    from models import OtpSession
+    session = db.query(OtpSession).filter(OtpSession.session_id == session_id).first()
+    if not session:
         return None
-    session = otp_sessions[session_id]
-    if datetime.now() > session["expires_at"]:
-        del otp_sessions[session_id]
+    if datetime.utcnow() > session.expires_at:
+        db.delete(session)
+        db.commit()
         return None
-    if session["otp"] == provided_otp:
-        session["verified"] = True
-        return session["ecode"]
+    if session.attempts >= MAX_VERIFY_ATTEMPTS:
+        db.delete(session)
+        db.commit()
+        return None
+    if session.otp_hash == _hash_otp(provided_otp):
+        session.verified = True
+        ecode = session.ecode
+        db.delete(session)  # one-time use
+        db.commit()
+        return ecode
+    # Wrong OTP — increment attempts
+    session.attempts += 1
+    db.commit()
     return None
 
 
-def cleanup_expired_sessions():
-    now = datetime.now()
-    expired = [sid for sid, s in otp_sessions.items() if now > s["expires_at"]]
-    for sid in expired:
-        del otp_sessions[sid]
+def cleanup_expired_sessions(db: Session) -> None:
+    from models import OtpSession
+    now = datetime.utcnow()
+    db.query(OtpSession).filter(OtpSession.expires_at < now).delete(synchronize_session=False)
+    db.commit()

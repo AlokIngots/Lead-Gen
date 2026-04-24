@@ -16,7 +16,10 @@ DROP TABLE IF EXISTS campaign_steps;
 DROP TABLE IF EXISTS campaigns;
 DROP TABLE IF EXISTS templates;
 DROP TABLE IF EXISTS import_batches;
+DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS otp_sessions;
 DROP TABLE IF EXISTS leads;
+DROP TABLE IF EXISTS companies;
 DROP TABLE IF EXISTS v2_users;
 
 SET FOREIGN_KEY_CHECKS = 1;
@@ -99,6 +102,7 @@ CREATE TABLE leads (
     next_action_at    DATETIME       NULL,
 
     import_batch_id  BIGINT UNSIGNED NULL,
+    company_id       BIGINT UNSIGNED NULL,
 
     notes            TEXT            NULL,
     tags             JSON            NULL,
@@ -119,7 +123,68 @@ CREATE TABLE leads (
     KEY idx_leads_email             (email),
     KEY idx_leads_phone             (phone),
     KEY idx_leads_segment_status    (industry_segment, status),
-    KEY idx_leads_import_batch      (import_batch_id)
+    KEY idx_leads_import_batch      (import_batch_id),
+    KEY idx_leads_company_id        (company_id),
+    CONSTRAINT fk_leads_company FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- audit_log — who did what
+-- ---------------------------------------------------------------------------
+CREATE TABLE audit_log (
+    id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    user_ecode   VARCHAR(32)     NOT NULL,
+    action       VARCHAR(64)     NOT NULL,
+    entity_type  VARCHAR(64)     NOT NULL,
+    entity_id    VARCHAR(64)     NULL,
+    details      JSON            NULL,
+    ip_address   VARCHAR(45)     NULL,
+    created_at   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_audit_user    (user_ecode),
+    KEY idx_audit_action  (action),
+    KEY idx_audit_entity  (entity_type),
+    KEY idx_audit_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- otp_sessions — database-backed OTP storage (works across workers)
+-- ---------------------------------------------------------------------------
+CREATE TABLE otp_sessions (
+    session_id    VARCHAR(64)  NOT NULL,
+    ecode         VARCHAR(32)  NOT NULL,
+    otp_hash      VARCHAR(255) NOT NULL,
+    phone_number  VARCHAR(32)  NOT NULL,
+    verified      TINYINT(1)   NOT NULL DEFAULT 0,
+    attempts      INT UNSIGNED NOT NULL DEFAULT 0,
+    expires_at    DATETIME     NOT NULL,
+    created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id),
+    KEY idx_otp_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ---------------------------------------------------------------------------
+-- companies — company-level summary data synced from Google Sheets
+-- ---------------------------------------------------------------------------
+CREATE TABLE companies (
+    id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    name             VARCHAR(255)    NOT NULL,
+    industry_segment ENUM(
+        'pumps','valves','pneumatics','defense',
+        'stockholders','cnc','forging','others'
+    ) NOT NULL DEFAULT 'others',
+    country          VARCHAR(64)     NOT NULL DEFAULT 'India',
+    total_scraped    INT UNSIGNED    NOT NULL DEFAULT 0,
+    emails_sent      INT UNSIGNED    NOT NULL DEFAULT 0,
+    scrapped_date    DATE            NULL,
+    status           VARCHAR(64)     NULL,
+    source_tab       VARCHAR(128)    NULL,
+    created_at       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uq_companies_name_segment (name, industry_segment),
+    KEY idx_companies_segment (industry_segment),
+    KEY idx_companies_status  (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ---------------------------------------------------------------------------

@@ -8,12 +8,13 @@ from models import (
     Lead, LEAD_STATUSES, INDUSTRY_SEGMENTS,
     Campaign, LeadDripState, CampaignEvent, V2User,
 )
+from auth_deps import get_current_user
 
 router = APIRouter()
 
 
 @router.get("/funnel")
-def funnel(db: Session = Depends(get_db)):
+def funnel(db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     rows = (
         db.query(Lead.status, func.count(Lead.id))
           .group_by(Lead.status)
@@ -30,7 +31,7 @@ def funnel(db: Session = Depends(get_db)):
 
 
 @router.get("/segments")
-def segments(db: Session = Depends(get_db)):
+def segments(db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     rows = (
         db.query(
             Lead.industry_segment,
@@ -55,7 +56,7 @@ def segments(db: Session = Depends(get_db)):
 
 
 @router.get("/dashboard")
-def dashboard(db: Session = Depends(get_db)):
+def dashboard(db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     # Section 1 — top stats
     status_counts = dict(
         db.query(Lead.status, func.count(Lead.id)).group_by(Lead.status).all()
@@ -111,27 +112,37 @@ def dashboard(db: Session = Depends(get_db)):
             "replied": replied, "reply_rate": rate,
         })
 
-    # Section 3b — active campaigns
+    # Section 3b — active campaigns (bulk queries instead of per-campaign)
     campaigns_q = (
         db.query(Campaign)
           .filter(Campaign.status.in_(["active", "paused"]))
           .order_by(Campaign.id.desc())
           .all()
     )
+    camp_ids = [c.id for c in campaigns_q]
+    camp_enrolled = {}
+    camp_events = {}
+    if camp_ids:
+        camp_enrolled = dict(
+            db.query(LeadDripState.campaign_id, func.count(LeadDripState.id))
+              .filter(LeadDripState.campaign_id.in_(camp_ids))
+              .group_by(LeadDripState.campaign_id).all()
+        )
+        for cid, etype, cnt in (
+            db.query(CampaignEvent.campaign_id, CampaignEvent.event_type, func.count(CampaignEvent.id))
+              .filter(CampaignEvent.campaign_id.in_(camp_ids), CampaignEvent.event_type.in_(["sent", "replied"]))
+              .group_by(CampaignEvent.campaign_id, CampaignEvent.event_type).all()
+        ):
+            camp_events.setdefault(cid, {})[etype] = int(cnt)
+
     active_campaigns = []
     for c in campaigns_q:
-        enrolled = db.query(func.count(LeadDripState.id)).filter(
-            LeadDripState.campaign_id == c.id
-        ).scalar() or 0
-        sent = db.query(func.count(CampaignEvent.id)).filter(
-            CampaignEvent.campaign_id == c.id, CampaignEvent.event_type == "sent"
-        ).scalar() or 0
-        replied = db.query(func.count(CampaignEvent.id)).filter(
-            CampaignEvent.campaign_id == c.id, CampaignEvent.event_type == "replied"
-        ).scalar() or 0
+        es = camp_events.get(c.id, {})
+        sent = es.get("sent", 0)
+        replied = es.get("replied", 0)
         active_campaigns.append({
             "id": c.id, "name": c.name, "segment": c.segment_filter,
-            "status": c.status, "enrolled": int(enrolled),
+            "status": c.status, "enrolled": int(camp_enrolled.get(c.id, 0)),
             "reply_rate": round((replied / sent) * 100, 1) if sent else 0.0,
         })
 
@@ -193,7 +204,7 @@ def dashboard(db: Session = Depends(get_db)):
 
 
 @router.get("/summary")
-def summary(db: Session = Depends(get_db)):
+def summary(db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     total = db.query(func.count(Lead.id)).scalar() or 0
     dnc = db.query(func.count(Lead.id)).filter(Lead.dnc_flag.is_(True)).scalar() or 0
     bounced = db.query(func.count(Lead.id)).filter(Lead.bounce_flag.is_(True)).scalar() or 0

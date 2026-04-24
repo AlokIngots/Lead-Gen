@@ -31,7 +31,7 @@ def hash_pw(pw: str) -> str:
 
 
 def main() -> None:
-    Base.metadata.create_all(bind=engine, tables=[V2User.__table__])
+    Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
         for ecode, name, role in USERS:

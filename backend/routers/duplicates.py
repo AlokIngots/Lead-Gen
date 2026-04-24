@@ -6,15 +6,10 @@ from typing import List
 
 from database import get_db
 from models import Lead, CampaignEvent, V2User
-from auth_deps import get_current_user
+from auth_deps import get_current_user, require_admin
+from services.audit import log_action
 
 router = APIRouter()
-
-
-def require_admin(user: V2User = Depends(get_current_user)):
-    if user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin role required")
-    return user
 
 
 # ---------- schemas ----------
@@ -65,7 +60,7 @@ def duplicate_stats(
 def scan_duplicates(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
-    mode: str = Query("company", regex="^(company|domain)$"),
+    mode: str = Query("company", pattern="^(company|domain)$"),
     db: Session = Depends(get_db),
     _user: V2User = Depends(require_admin),
 ):
@@ -228,6 +223,7 @@ def merge_duplicates(
         deleted_ids.append(m.id)
         db.delete(m)
 
+    log_action(db, _user, "merge", "lead", keep.id, details={"kept": keep.id, "deleted_ids": deleted_ids})
     db.commit()
 
     return {

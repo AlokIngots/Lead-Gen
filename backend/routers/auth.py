@@ -1,12 +1,11 @@
 import os
-from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from database import get_db
 from models import V2User
-from auth_deps import create_access_token, get_current_user
+from auth_deps import create_access_token, create_refresh_token, rotate_refresh_token, get_current_user
 from services.rate_limit import RateLimiter
 from services.otp_service import (
     generate_otp,
@@ -47,7 +46,7 @@ async def login(
     request: Request,
     db: Session = Depends(get_db),
 ):
-    cleanup_expired_sessions()
+    cleanup_expired_sessions(db)
 
     client_ip = request.client.host if request.client else "unknown"
     key = f"login:{payload.emp_code}:{client_ip}"
@@ -70,7 +69,7 @@ async def login(
     except Exception:
         raise HTTPException(status_code=502, detail="Failed to send OTP")
 
-    store_otp_session(session_id, user.ecode, otp, user.phone)
+    store_otp_session(db, session_id, user.ecode, otp, user.phone)
 
     last4 = user.phone[-4:] if len(user.phone) >= 4 else user.phone
     resp = {
@@ -93,7 +92,7 @@ async def verify_otp(
     if not _verify_limiter.allow(key):
         raise HTTPException(status_code=429, detail="Too many OTP verification attempts. Try later.")
 
-    ecode = verify_otp_session(payload.session_id, payload.otp)
+    ecode = verify_otp_session(db, payload.session_id, payload.otp)
     if not ecode:
         raise HTTPException(status_code=400, detail="Invalid or expired OTP")
 
@@ -101,9 +100,34 @@ async def verify_otp(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    token = create_access_token(user.ecode)
+    access_token = create_access_token(user.ecode)
+    refresh_token = create_refresh_token(db, user.ecode)
     return {
-        "access_token": token,
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "token_type": "bearer",
+        "user": {
+            "emp_code": user.ecode,
+            "name": user.name,
+            "role": user.role,
+        },
+    }
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(..., min_length=1)
+
+
+@router.post("/refresh")
+async def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
+    """Exchange a valid refresh token for a new access + refresh token pair."""
+    new_access, new_refresh, ecode = rotate_refresh_token(db, payload.refresh_token)
+    user = db.query(V2User).filter(V2User.ecode == ecode).first()
+    if not user or not user.is_active:
+        raise HTTPException(401, "User not found or inactive")
+    return {
+        "access_token": new_access,
+        "refresh_token": new_refresh,
         "token_type": "bearer",
         "user": {
             "emp_code": user.ecode,

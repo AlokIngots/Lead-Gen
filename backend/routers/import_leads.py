@@ -8,7 +8,9 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import ImportBatch, Lead, INDUSTRY_SEGMENTS, LEAD_STATUSES
+from models import ImportBatch, Lead, V2User, INDUSTRY_SEGMENTS, LEAD_STATUSES
+from auth_deps import get_current_user, require_admin
+from services.audit import log_action
 
 router = APIRouter()
 
@@ -99,6 +101,7 @@ async def import_csv(
     duplicate_handling: str = Form("skip"),
     column_mapping: Optional[str] = Form(None),
     db: Session = Depends(get_db),
+    _user: V2User = Depends(require_admin),
 ):
     if not file.filename:
         raise HTTPException(400, "missing filename")
@@ -210,6 +213,11 @@ async def import_csv(
     db.commit()
     db.refresh(batch)
 
+    log_action(db, _user, "import", "lead", batch.id, details={
+        "filename": file.filename, "inserted": inserted, "duplicates": duplicates, "errors": errors,
+    })
+    db.commit()
+
     return {
         "batch_id": batch.id,
         "total_rows": batch.total_rows,
@@ -222,7 +230,7 @@ async def import_csv(
 
 
 @router.get("/history")
-def import_history(db: Session = Depends(get_db)):
+def import_history(db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     rows = (
         db.query(ImportBatch)
         .order_by(ImportBatch.id.desc())

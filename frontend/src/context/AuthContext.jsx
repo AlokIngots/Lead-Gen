@@ -2,8 +2,9 @@ import { createContext, useContext, useState, useEffect, useCallback } from 'rea
 import api, { AuthAPI } from '../api'
 
 const AuthContext = createContext(null)
-const TOKEN_KEY = 'alok_lms_token'
-const USER_KEY  = 'alok_lms_user'
+const TOKEN_KEY   = 'alok_lms_token'
+const REFRESH_KEY = 'alok_lms_refresh'
+const USER_KEY    = 'alok_lms_user'
 
 export function AuthProvider({ children }) {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY))
@@ -33,15 +34,17 @@ export function AuthProvider({ children }) {
     }
   }, [token]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const login = useCallback((accessToken, userObj) => {
+  const login = useCallback((accessToken, userObj, refreshToken) => {
     localStorage.setItem(TOKEN_KEY, accessToken)
-    localStorage.setItem(USER_KEY,  JSON.stringify(userObj))
+    if (refreshToken) localStorage.setItem(REFRESH_KEY, refreshToken)
+    localStorage.setItem(USER_KEY, JSON.stringify(userObj))
     setToken(accessToken)
     setUser(userObj)
   }, [])
 
   const logout = useCallback(() => {
     localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem(REFRESH_KEY)
     localStorage.removeItem(USER_KEY)
     setToken(null)
     setUser(null)

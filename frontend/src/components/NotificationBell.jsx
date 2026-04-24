@@ -31,14 +31,14 @@ export default function NotificationBell() {
 
   const { data: items = [] } = useQuery({
     queryKey: ['notifications', empCode],
-    queryFn: () => NotificationsAPI.list({ emp_code: empCode, limit: 10 }),
+    queryFn: () => NotificationsAPI.list({ limit: 10 }),
     enabled: !!empCode,
     refetchInterval: 30_000,
   })
 
   const { data: countData } = useQuery({
     queryKey: ['notifications-count', empCode],
-    queryFn: () => NotificationsAPI.unreadCount(empCode),
+    queryFn: () => NotificationsAPI.unreadCount(),
     enabled: !!empCode,
     refetchInterval: 30_000,
   })
@@ -76,7 +76,7 @@ export default function NotificationBell() {
   const handleMarkAll = async (e) => {
     e.stopPropagation()
     try {
-      await NotificationsAPI.markAllRead(empCode)
+      await NotificationsAPI.markAllRead()
     } catch (_) {}
     invalidate()
   }

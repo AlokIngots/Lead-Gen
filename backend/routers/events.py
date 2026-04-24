@@ -5,7 +5,8 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import CampaignEvent, Lead, Notification
+from models import CampaignEvent, Lead, Notification, V2User
+from auth_deps import get_current_user
 
 router = APIRouter()
 
@@ -57,7 +58,7 @@ class EventOut(EventIn):
 
 
 @router.post("", response_model=EventOut, status_code=201)
-def log_event(body: EventIn, db: Session = Depends(get_db)):
+def log_event(body: EventIn, db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     if body.event_type not in EVENT_TYPES:
         raise HTTPException(400, f"invalid event_type: {body.event_type}")
     if body.channel not in CHANNELS:
@@ -117,6 +118,7 @@ def log_event(body: EventIn, db: Session = Depends(get_db)):
 @router.get("", response_model=List[EventOut])
 def list_events(
     db: Session = Depends(get_db),
+    _user: V2User = Depends(get_current_user),
     lead_id: Optional[int] = None,
     campaign_id: Optional[int] = None,
     event_type: Optional[str] = None,

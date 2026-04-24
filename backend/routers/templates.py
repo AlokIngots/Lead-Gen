@@ -4,7 +4,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import Template
+from models import Template, V2User
+from auth_deps import get_current_user, require_admin
 
 router = APIRouter()
 
@@ -44,6 +45,7 @@ def _validate_channel(ch: str) -> None:
 def list_templates(
     channel: Optional[str] = None,
     db: Session = Depends(get_db),
+    _user: V2User = Depends(get_current_user),
 ):
     q = db.query(Template)
     if channel:
@@ -53,7 +55,7 @@ def list_templates(
 
 
 @router.post("", response_model=TemplateOut, status_code=201)
-def create_template(body: TemplateIn, db: Session = Depends(get_db)):
+def create_template(body: TemplateIn, db: Session = Depends(get_db), _user: V2User = Depends(require_admin)):
     _validate_channel(body.channel)
     data = body.model_dump()
     segment = data.pop("segment", None)
@@ -69,7 +71,7 @@ def create_template(body: TemplateIn, db: Session = Depends(get_db)):
 
 
 @router.get("/{template_id}", response_model=TemplateOut)
-def get_template(template_id: int, db: Session = Depends(get_db)):
+def get_template(template_id: int, db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     t = db.query(Template).filter(Template.id == template_id).first()
     if not t:
         raise HTTPException(404, "template not found")
@@ -77,7 +79,7 @@ def get_template(template_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/{template_id}", response_model=TemplateOut)
-def update_template(template_id: int, body: TemplateIn, db: Session = Depends(get_db)):
+def update_template(template_id: int, body: TemplateIn, db: Session = Depends(get_db), _user: V2User = Depends(require_admin)):
     t = db.query(Template).filter(Template.id == template_id).first()
     if not t:
         raise HTTPException(404, "template not found")
@@ -95,7 +97,7 @@ def update_template(template_id: int, body: TemplateIn, db: Session = Depends(ge
 
 
 @router.delete("/{template_id}", status_code=204)
-def delete_template(template_id: int, db: Session = Depends(get_db)):
+def delete_template(template_id: int, db: Session = Depends(get_db), _user: V2User = Depends(require_admin)):
     t = db.query(Template).filter(Template.id == template_id).first()
     if not t:
         raise HTTPException(404, "template not found")

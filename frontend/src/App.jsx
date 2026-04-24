@@ -10,6 +10,7 @@ import Campaigns from './pages/Campaigns.jsx'
 import Templates from './pages/Templates.jsx'
 import Analytics from './pages/Analytics.jsx'
 import Import from './pages/Import.jsx'
+import Companies from './pages/Companies.jsx'
 import Duplicates from './pages/Duplicates.jsx'
 import MyTasks from './pages/MyTasks.jsx'
 
@@ -38,6 +39,7 @@ export default function App() {
                 <Route path="/" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/leads" element={<LeadsList />} />
+                <Route path="/companies" element={<Companies />} />
                 <Route path="/leads/:id" element={<LeadDetail />} />
                 <Route path="/campaigns" element={<Campaigns />} />
                 <Route path="/templates" element={<Templates />} />

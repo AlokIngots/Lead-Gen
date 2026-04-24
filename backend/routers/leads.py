@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import Lead, V2User, INDUSTRY_SEGMENTS, LEAD_STATUSES
 from auth_deps import get_current_user
+from services.audit import log_action
 
 router = APIRouter()
 
@@ -59,6 +60,7 @@ class LeadPatch(BaseModel):
 @router.get("", response_model=LeadListResponse)
 def list_leads(
     db: Session = Depends(get_db),
+    _user: V2User = Depends(get_current_user),
     q: Optional[str] = Query(None, description="search on company/contact/email/phone"),
     status: Optional[str] = None,
     industry_segment: Optional[str] = None,
@@ -247,7 +249,7 @@ class LeadBulkPatch(BaseModel):
 
 
 @router.patch("/bulk")
-def bulk_update_leads(patch: LeadBulkPatch, db: Session = Depends(get_db)):
+def bulk_update_leads(patch: LeadBulkPatch, db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     data = patch.model_dump(exclude_unset=True, exclude={'ids'})
     if not data:
         raise HTTPException(400, "no fields to update")
@@ -260,12 +262,13 @@ def bulk_update_leads(patch: LeadBulkPatch, db: Session = Depends(get_db)):
           .filter(Lead.id.in_(patch.ids))
           .update(data, synchronize_session=False)
     )
+    log_action(db, _user, "bulk_update", "lead", details={"ids": patch.ids[:20], "fields": data, "count": updated})
     db.commit()
     return {"updated": updated}
 
 
 @router.get("/{lead_id}", response_model=LeadOut)
-def get_lead(lead_id: int, db: Session = Depends(get_db)):
+def get_lead(lead_id: int, db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         raise HTTPException(404, "lead not found")
@@ -273,7 +276,7 @@ def get_lead(lead_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/{lead_id}", response_model=LeadOut)
-def update_lead(lead_id: int, patch: LeadPatch, db: Session = Depends(get_db)):
+def update_lead(lead_id: int, patch: LeadPatch, db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         raise HTTPException(404, "lead not found")
@@ -287,6 +290,7 @@ def update_lead(lead_id: int, patch: LeadPatch, db: Session = Depends(get_db)):
     for k, v in data.items():
         setattr(lead, k, v)
 
+    log_action(db, _user, "update", "lead", lead_id, details=data)
     db.commit()
     db.refresh(lead)
     return lead

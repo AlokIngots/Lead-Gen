@@ -2,14 +2,16 @@ from datetime import datetime
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy import func, case, literal_column
+from sqlalchemy.orm import Session, subqueryload
 
 from database import get_db
 from models import (
-    Campaign, CampaignStep, Lead, LeadDripState, CampaignEvent,
+    Campaign, CampaignStep, Lead, LeadDripState, CampaignEvent, V2User,
     INDUSTRY_SEGMENTS, LEAD_STATUSES,
 )
+from auth_deps import get_current_user, require_admin
+from services.audit import log_action
 
 router = APIRouter()
 
@@ -78,55 +80,68 @@ class EnrollResult(BaseModel):
 
 
 @router.get("", response_model=List[CampaignCardOut])
-def list_campaigns(db: Session = Depends(get_db)):
+def list_campaigns(db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
+    # Pre-compute all aggregates in bulk (3 queries instead of 5N)
+    step_counts = dict(
+        db.query(CampaignStep.campaign_id, func.count(CampaignStep.id))
+          .group_by(CampaignStep.campaign_id).all()
+    )
+    enrolled_counts = dict(
+        db.query(LeadDripState.campaign_id, func.count(LeadDripState.id))
+          .group_by(LeadDripState.campaign_id).all()
+    )
+    qualified_counts = dict(
+        db.query(LeadDripState.campaign_id, func.count(Lead.id))
+          .join(Lead, Lead.id == LeadDripState.lead_id)
+          .filter(Lead.status == "qualified")
+          .group_by(LeadDripState.campaign_id).all()
+    )
+    event_stats = {}
+    for cid, etype, cnt in (
+        db.query(
+            CampaignEvent.campaign_id,
+            CampaignEvent.event_type,
+            func.count(CampaignEvent.id),
+        )
+        .filter(CampaignEvent.event_type.in_(["sent", "replied"]))
+        .group_by(CampaignEvent.campaign_id, CampaignEvent.event_type)
+        .all()
+    ):
+        event_stats.setdefault(cid, {})[etype] = int(cnt)
+
     rows = db.query(Campaign).order_by(Campaign.id.desc()).all()
     out: list[CampaignCardOut] = []
     for c in rows:
-        step_count = db.query(func.count(CampaignStep.id)).filter(
-            CampaignStep.campaign_id == c.id
-        ).scalar() or 0
-        enrolled_count = db.query(func.count(LeadDripState.id)).filter(
-            LeadDripState.campaign_id == c.id
-        ).scalar() or 0
-        qualified_count = (
-            db.query(func.count(Lead.id))
-              .join(LeadDripState, LeadDripState.lead_id == Lead.id)
-              .filter(LeadDripState.campaign_id == c.id, Lead.status == "qualified")
-              .scalar()
-            or 0
-        )
-        sent = db.query(func.count(CampaignEvent.id)).filter(
-            CampaignEvent.campaign_id == c.id, CampaignEvent.event_type == "sent"
-        ).scalar() or 0
-        replied = db.query(func.count(CampaignEvent.id)).filter(
-            CampaignEvent.campaign_id == c.id, CampaignEvent.event_type == "replied"
-        ).scalar() or 0
-        reply_rate = round((replied / sent) * 100, 1) if sent else 0.0
+        es = event_stats.get(c.id, {})
+        sent = es.get("sent", 0)
+        replied = es.get("replied", 0)
         out.append(CampaignCardOut(
             id=c.id,
             name=c.name,
             description=c.description,
             segment_filter=c.segment_filter,
             status=c.status,
-            step_count=step_count,
-            enrolled_count=enrolled_count,
-            qualified_count=qualified_count,
-            reply_rate=reply_rate,
+            step_count=int(step_counts.get(c.id, 0)),
+            enrolled_count=int(enrolled_counts.get(c.id, 0)),
+            qualified_count=int(qualified_counts.get(c.id, 0)),
+            reply_rate=round((replied / sent) * 100, 1) if sent else 0.0,
         ))
     return out
 
 
 @router.post("", response_model=CampaignOut, status_code=201)
-def create_campaign(body: CampaignIn, db: Session = Depends(get_db)):
+def create_campaign(body: CampaignIn, db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     c = Campaign(**body.model_dump())
     db.add(c)
+    db.flush()
+    log_action(db, _user, "create", "campaign", c.id, details={"name": c.name})
     db.commit()
     db.refresh(c)
     return c
 
 
 @router.get("/{campaign_id}", response_model=CampaignOut)
-def get_campaign(campaign_id: int, db: Session = Depends(get_db)):
+def get_campaign(campaign_id: int, db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     c = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not c:
         raise HTTPException(404, "campaign not found")
@@ -134,7 +149,7 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db)):
 
 
 @router.patch("/{campaign_id}", response_model=CampaignOut)
-def update_campaign(campaign_id: int, body: CampaignIn, db: Session = Depends(get_db)):
+def update_campaign(campaign_id: int, body: CampaignIn, db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     c = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not c:
         raise HTTPException(404, "campaign not found")
@@ -146,10 +161,11 @@ def update_campaign(campaign_id: int, body: CampaignIn, db: Session = Depends(ge
 
 
 @router.delete("/{campaign_id}", status_code=204)
-def delete_campaign(campaign_id: int, db: Session = Depends(get_db)):
+def delete_campaign(campaign_id: int, db: Session = Depends(get_db), _user: V2User = Depends(require_admin)):
     c = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not c:
         raise HTTPException(404, "campaign not found")
+    log_action(db, _user, "delete", "campaign", campaign_id, details={"name": c.name})
     db.delete(c)
     db.commit()
 
@@ -157,7 +173,7 @@ def delete_campaign(campaign_id: int, db: Session = Depends(get_db)):
 # ---- steps ----
 
 @router.get("/{campaign_id}/steps", response_model=List[CampaignStepOut])
-def list_steps(campaign_id: int, db: Session = Depends(get_db)):
+def list_steps(campaign_id: int, db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     return (
         db.query(CampaignStep)
           .filter(CampaignStep.campaign_id == campaign_id)
@@ -167,7 +183,7 @@ def list_steps(campaign_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/{campaign_id}/steps", response_model=CampaignStepOut, status_code=201)
-def add_step(campaign_id: int, body: CampaignStepIn, db: Session = Depends(get_db)):
+def add_step(campaign_id: int, body: CampaignStepIn, db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     if not db.query(Campaign).filter(Campaign.id == campaign_id).first():
         raise HTTPException(404, "campaign not found")
     step = CampaignStep(campaign_id=campaign_id, **body.model_dump())
@@ -178,7 +194,7 @@ def add_step(campaign_id: int, body: CampaignStepIn, db: Session = Depends(get_d
 
 
 @router.patch("/{campaign_id}/steps/{step_id}", response_model=CampaignStepOut)
-def update_step(campaign_id: int, step_id: int, body: CampaignStepIn, db: Session = Depends(get_db)):
+def update_step(campaign_id: int, step_id: int, body: CampaignStepIn, db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     step = db.query(CampaignStep).filter(
         CampaignStep.id == step_id,
         CampaignStep.campaign_id == campaign_id,
@@ -193,7 +209,7 @@ def update_step(campaign_id: int, step_id: int, body: CampaignStepIn, db: Sessio
 
 
 @router.delete("/{campaign_id}/steps/{step_id}", status_code=204)
-def delete_step(campaign_id: int, step_id: int, db: Session = Depends(get_db)):
+def delete_step(campaign_id: int, step_id: int, db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     step = db.query(CampaignStep).filter(
         CampaignStep.id == step_id,
         CampaignStep.campaign_id == campaign_id,
@@ -224,7 +240,7 @@ def _build_enroll_query(db: Session, filters: EnrollFilters):
 
 
 @router.post("/{campaign_id}/enroll/preview")
-def enroll_preview(campaign_id: int, filters: EnrollFilters, db: Session = Depends(get_db)):
+def enroll_preview(campaign_id: int, filters: EnrollFilters, db: Session = Depends(get_db), _user: V2User = Depends(get_current_user)):
     if not db.query(Campaign).filter(Campaign.id == campaign_id).first():
         raise HTTPException(404, "campaign not found")
     q = _build_enroll_query(db, filters)
@@ -244,7 +260,7 @@ def enroll_preview(campaign_id: int, filters: EnrollFilters, db: Session = Depen
 
 
 @router.post("/{campaign_id}/enroll", response_model=EnrollResult)
-def enroll_leads(campaign_id: int, filters: EnrollFilters, db: Session = Depends(get_db)):
+def enroll_leads(campaign_id: int, filters: EnrollFilters, db: Session = Depends(get_db), _user: V2User = Depends(require_admin)):
     if not db.query(Campaign).filter(Campaign.id == campaign_id).first():
         raise HTTPException(404, "campaign not found")
 

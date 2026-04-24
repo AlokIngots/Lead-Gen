@@ -5,10 +5,12 @@
 `/drip/advance` — move a lead to the next step in its drip sequence
 `/drip/webhook/reply` — fallback reply webhook (mirrors the n8n SES workflow)
 """
+import os
+import secrets
 from datetime import datetime, timedelta
 from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import and_
 from sqlalchemy.orm import Session
@@ -20,8 +22,37 @@ from models import (
 from routers.events import (
     DEFAULT_SCORE_DELTAS, EVENT_TYPES, CHANNELS, _clamp_score,
 )
+from auth_deps import get_current_user
 
 router = APIRouter()
+
+# Drip endpoints are called by n8n / SES webhooks (machine-to-machine).
+# They accept either a user JWT or an API key via X-API-Key header.
+DRIP_API_KEY = os.getenv("DRIP_API_KEY", "")
+
+
+def require_drip_auth(
+    authorization: Optional[str] = Header(None),
+    x_api_key: Optional[str] = Header(None),
+    db: Session = Depends(get_db),
+):
+    """Allow access via user JWT OR a shared API key for n8n/webhook callers."""
+    if x_api_key and DRIP_API_KEY and secrets.compare_digest(x_api_key, DRIP_API_KEY):
+        return  # API key auth passed
+    if authorization:
+        # Fall through to normal JWT auth
+        from auth_deps import decode_token_to_ecode
+        try:
+            scheme, token = authorization.split(" ", 1)
+            if scheme.lower() != "bearer":
+                raise HTTPException(401, "Invalid auth scheme")
+            ecode = decode_token_to_ecode(token)
+            user = db.query(V2User).filter(V2User.ecode == ecode).first()
+            if user and user.is_active:
+                return
+        except (ValueError, HTTPException):
+            pass
+    raise HTTPException(401, "Authorization required (JWT or X-API-Key)")
 
 
 # ----------------------------- schemas -----------------------------
@@ -100,7 +131,7 @@ def _resolve_template(step: CampaignStep, db: Session) -> tuple[Optional[str], O
 # ----------------------------- endpoints -----------------------------
 
 @router.get("/due", response_model=List[DripDueItem])
-def due(limit: int = 200, db: Session = Depends(get_db)):
+def due(limit: int = 200, db: Session = Depends(get_db), _auth=Depends(require_drip_auth)):
     now = datetime.utcnow()
     rows = (
         db.query(LeadDripState, Lead, Campaign, CampaignStep)
@@ -166,7 +197,7 @@ def due(limit: int = 200, db: Session = Depends(get_db)):
 
 
 @router.post("/log", status_code=201)
-def log(body: DripLogIn, db: Session = Depends(get_db)):
+def log(body: DripLogIn, db: Session = Depends(get_db), _auth=Depends(require_drip_auth)):
     if body.event_type not in EVENT_TYPES:
         raise HTTPException(400, f"invalid event_type: {body.event_type}")
     channel = body.channel
@@ -207,7 +238,7 @@ def log(body: DripLogIn, db: Session = Depends(get_db)):
 
 
 @router.post("/advance", response_model=DripAdvanceOut)
-def advance(body: DripAdvanceIn, db: Session = Depends(get_db)):
+def advance(body: DripAdvanceIn, db: Session = Depends(get_db), _auth=Depends(require_drip_auth)):
     state = (
         db.query(LeadDripState)
           .filter(LeadDripState.lead_id == body.lead_id,
@@ -247,7 +278,7 @@ def advance(body: DripAdvanceIn, db: Session = Depends(get_db)):
 
 
 @router.post("/webhook/reply", status_code=200)
-def reply_webhook(body: ReplyWebhookIn, db: Session = Depends(get_db)):
+def reply_webhook(body: ReplyWebhookIn, db: Session = Depends(get_db), _auth=Depends(require_drip_auth)):
     """Fallback for the SES → SNS → n8n flow. Same effect, called directly."""
     email = body.email.strip().lower()
     if not email:

@@ -3,7 +3,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import leads, campaigns, events, import_leads, analytics, auth, templates, users, drip, notifications, duplicates
+from routers import leads, campaigns, events, import_leads, analytics, auth, templates, users, drip, notifications, duplicates, companies
+from middleware.rate_limit import RateLimitMiddleware
 
 load_dotenv()
 
@@ -22,9 +23,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in cors_origins if o.strip()],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
 )
+
+app.add_middleware(RateLimitMiddleware)
 
 
 @app.get("/")
@@ -48,3 +51,4 @@ app.include_router(users.router,        prefix="/users",     tags=["users"])
 app.include_router(drip.router,         prefix="/drip",      tags=["drip"])
 app.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 app.include_router(duplicates.router,    prefix="/duplicates",    tags=["duplicates"])
+app.include_router(companies.router,     prefix="/companies",     tags=["companies"])

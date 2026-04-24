@@ -8,6 +8,19 @@ from sqlalchemy.sql import func
 from database import Base
 
 
+class OtpSession(Base):
+    __tablename__ = "otp_sessions"
+
+    session_id = Column(String(64), primary_key=True)
+    ecode = Column(String(32), nullable=False)
+    otp_hash = Column(String(255), nullable=False)
+    phone_number = Column(String(32), nullable=False)
+    verified = Column(Boolean, nullable=False, default=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+
 class V2User(Base):
     __tablename__ = "v2_users"
 
@@ -31,6 +44,28 @@ LEAD_STATUSES = (
     "raw", "new", "emailed", "engaged", "contacted", "qualified", "transferred",
     "proposal", "negotiation", "won", "lost", "nurture", "disqualified",
 )
+
+
+class Company(Base):
+    __tablename__ = "companies"
+    __table_args__ = (UniqueConstraint("name", "industry_segment", name="uq_companies_name_segment"),)
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    name = Column(String(255), nullable=False)
+    industry_segment = Column(
+        Enum(*INDUSTRY_SEGMENTS, name="company_segment_enum"),
+        nullable=False, default="others", index=True,
+    )
+    country = Column(String(64), nullable=False, default="India")
+    total_scraped = Column(Integer, nullable=False, default=0)
+    emails_sent = Column(Integer, nullable=False, default=0)
+    scrapped_date = Column(DateTime)
+    status = Column(String(64))
+    source_tab = Column(String(128))
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+    updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+
+    leads = relationship("Lead", back_populates="company")
 
 
 class Lead(Base):
@@ -82,6 +117,7 @@ class Lead(Base):
     next_action_at = Column(DateTime, index=True)
 
     import_batch_id = Column(BigInteger, ForeignKey("import_batches.id"), index=True)
+    company_id = Column(BigInteger, ForeignKey("companies.id", ondelete="SET NULL"), index=True)
 
     notes = Column(Text)
     tags = Column(JSON)
@@ -89,6 +125,7 @@ class Lead(Base):
     created_at = Column(DateTime, nullable=False, server_default=func.now())
     updated_at = Column(DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
 
+    company = relationship("Company", back_populates="leads")
     events = relationship("CampaignEvent", back_populates="lead", cascade="all, delete-orphan")
     drip_states = relationship("LeadDripState", back_populates="lead", cascade="all, delete-orphan")
 
@@ -221,6 +258,30 @@ class CampaignEvent(Base):
     lead = relationship("Lead", back_populates="events")
     campaign = relationship("Campaign")
     step = relationship("CampaignStep")
+
+
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    token_hash = Column(String(255), nullable=False, unique=True, index=True)
+    ecode = Column(String(32), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    revoked = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+    user_ecode = Column(String(32), nullable=False, index=True)
+    action = Column(String(64), nullable=False, index=True)
+    entity_type = Column(String(64), nullable=False, index=True)
+    entity_id = Column(String(64))
+    details = Column(JSON)
+    ip_address = Column(String(45))
+    created_at = Column(DateTime, nullable=False, server_default=func.now(), index=True)
 
 
 class Notification(Base):

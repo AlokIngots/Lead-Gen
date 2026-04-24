@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import V2User
+from auth_deps import get_current_user
 
 router = APIRouter()
 
@@ -24,6 +25,7 @@ def list_users(
     role: Optional[str] = None,
     active_only: bool = True,
     db: Session = Depends(get_db),
+    _user: V2User = Depends(get_current_user),
 ):
     q = db.query(V2User)
     if role:

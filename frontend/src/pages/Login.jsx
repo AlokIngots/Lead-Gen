@@ -21,17 +21,14 @@ export default function Login() {
   const location  = useLocation()
   const from      = location.state?.from?.pathname || '/leads'
 
-  // Countdown timer for resend
   useEffect(() => {
     if (countdown <= 0) return
     const t = setTimeout(() => setCountdown(c => c - 1), 1000)
     return () => clearTimeout(t)
   }, [countdown])
 
-  // Clear error on step change
   useEffect(() => { setError('') }, [step])
 
-  // ── Step 1: Send OTP ──
   const sendOTP = async (e) => {
     if (e) e.preventDefault()
     if (!empCode.trim()) return
@@ -55,7 +52,6 @@ export default function Login() {
     }
   }
 
-  // ── Step 2: Verify OTP ──
   const verifyOTP = async (otpStr) => {
     if (!otpStr || otpStr.length !== 6) return
     if (verifyingRef.current) return
@@ -64,7 +60,7 @@ export default function Login() {
     setBusy(true)
     try {
       const r = await AuthAPI.verifyOTP(sessionId, otpStr)
-      login(r.access_token, r.user)
+      login(r.access_token, r.user, r.refresh_token)
       navigate(from, { replace: true })
     } catch (err) {
       setError(err.response?.data?.detail || 'Invalid OTP')
@@ -74,7 +70,6 @@ export default function Login() {
     }
   }
 
-  // ── OTP input handlers ──
   const handleOtpChange = (idx, value) => {
     if (!/^\d*$/.test(value)) return
     const next = [...otp]
@@ -130,111 +125,146 @@ export default function Login() {
     verifyingRef.current = false
   }
 
-  // ── Render ──
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gray-50">
-      <div className="w-full max-w-sm bg-white rounded-lg border border-gray-200 shadow-sm p-8">
-        <div className="text-center mb-6">
-          <div className="text-2xl font-semibold text-brand-600">Alok LMS</div>
-          <div className="text-sm text-gray-500 mt-1">
-            {step === 'ecode'
-              ? 'Sign in with your employee code'
-              : `Enter OTP sent to ******${phoneLast4}`}
+    <div className="login-page">
+      <div className="login-left">
+        <div className="login-card">
+          <div className="login-brand">
+            <div className="login-brand-logo">LM</div>
+            <div>
+              <div className="login-brand-text">Alok LMS</div>
+              <div className="login-brand-sub">Lead Pipeline</div>
+            </div>
+          </div>
+
+          {step === 'ecode' && (
+            <>
+              <div className="login-title">Welcome back</div>
+              <div className="login-subtitle">Sign in with your employee code to continue</div>
+              <form onSubmit={sendOTP} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div>
+                  <label className="field-label">Employee Code</label>
+                  <input
+                    type="text"
+                    value={empCode}
+                    onChange={e => setEmpCode(e.target.value.toUpperCase())}
+                    placeholder="e.g. EMP001"
+                    autoFocus
+                    disabled={busy}
+                    className="input"
+                    style={{ padding: '10px 14px', fontSize: 14 }}
+                  />
+                </div>
+                {error && (
+                  <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-btn)', background: 'var(--red-light)', color: 'var(--red)', fontSize: 12, fontWeight: 600 }}>
+                    {error}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  disabled={!empCode.trim() || busy}
+                  className="btn btn-primary btn-lg"
+                  style={{ width: '100%', padding: '12px 18px', fontSize: 14 }}
+                >
+                  {busy ? 'Sending OTP...' : 'Send OTP'}
+                </button>
+              </form>
+            </>
+          )}
+
+          {step === 'otp' && (
+            <>
+              <div className="login-title">Enter verification code</div>
+              <div className="login-subtitle">
+                We sent a 6-digit code to ******{phoneLast4}
+              </div>
+              <form onSubmit={e => { e.preventDefault(); verifyOTP(otp.join('')) }} style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+                <div className="otp-input-grid">
+                  {otp.map((digit, i) => (
+                    <input
+                      key={i}
+                      ref={el => inputRefs.current[i] = el}
+                      type="text"
+                      inputMode="numeric"
+                      maxLength={1}
+                      value={digit}
+                      onChange={e => handleOtpChange(i, e.target.value)}
+                      onKeyDown={e => handleKeyDown(i, e)}
+                      onPaste={i === 0 ? handlePaste : undefined}
+                      disabled={busy}
+                      autoComplete="off"
+                      className="otp-input"
+                    />
+                  ))}
+                </div>
+
+                {error && (
+                  <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-btn)', background: 'var(--red-light)', color: 'var(--red)', fontSize: 12, fontWeight: 600, textAlign: 'center' }}>
+                    {error}
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={otp.some(d => d === '') || busy}
+                  className="btn btn-primary btn-lg"
+                  style={{ width: '100%', padding: '12px 18px', fontSize: 14 }}
+                >
+                  {busy ? 'Verifying...' : 'Verify'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={goBack}
+                  disabled={busy}
+                  className="btn btn-ghost btn-lg"
+                  style={{ width: '100%' }}
+                >
+                  Back
+                </button>
+
+                <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-muted)' }}>
+                  {countdown > 0
+                    ? <span>Resend in <span className="mono" style={{ fontWeight: 600, color: 'var(--text-secondary)' }}>{countdown}s</span></span>
+                    : (
+                      <button
+                        type="button"
+                        onClick={handleResend}
+                        disabled={busy}
+                        style={{
+                          background: 'none', border: 'none', cursor: 'pointer',
+                          color: 'var(--blue)', fontWeight: 600, fontSize: 12,
+                          fontFamily: 'inherit',
+                        }}
+                      >
+                        Resend OTP
+                      </button>
+                    )}
+                </div>
+              </form>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="login-right">
+        <div className="login-right-content">
+          <div style={{
+            width: 64, height: 64, borderRadius: 16,
+            background: 'rgba(255,255,255,.15)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            margin: '0 auto 24px',
+            fontSize: 28,
+          }}>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" />
+            </svg>
+          </div>
+          <div className="login-right-title">Streamline your pipeline</div>
+          <div className="login-right-desc">
+            Track leads, automate outreach, and close deals faster with intelligent campaign management.
           </div>
         </div>
-
-        {/* ── STEP 1: Employee Code ── */}
-        {step === 'ecode' && (
-          <form onSubmit={sendOTP} className="space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-1">
-                Employee Code
-              </label>
-              <input
-                type="text"
-                value={empCode}
-                onChange={e => setEmpCode(e.target.value.toUpperCase())}
-                placeholder="e.g. EMP001"
-                autoFocus
-                disabled={busy}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50"
-              />
-            </div>
-
-            {error && <div className="text-sm text-red-600">{error}</div>}
-
-            <button
-              type="submit"
-              disabled={!empCode.trim() || busy}
-              className="w-full py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-md text-sm font-medium disabled:opacity-50"
-            >
-              {busy ? 'Sending OTP...' : 'Send OTP'}
-            </button>
-          </form>
-        )}
-
-        {/* ── STEP 2: OTP ── */}
-        {step === 'otp' && (
-          <form onSubmit={e => { e.preventDefault(); verifyOTP(otp.join('')) }} className="space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-gray-700 mb-2 text-center">
-                Verification Code
-              </label>
-              <div className="flex justify-center gap-2">
-                {otp.map((digit, i) => (
-                  <input
-                    key={i}
-                    ref={el => inputRefs.current[i] = el}
-                    type="text"
-                    inputMode="numeric"
-                    maxLength={1}
-                    value={digit}
-                    onChange={e => handleOtpChange(i, e.target.value)}
-                    onKeyDown={e => handleKeyDown(i, e)}
-                    onPaste={i === 0 ? handlePaste : undefined}
-                    disabled={busy}
-                    autoComplete="off"
-                    className="w-10 h-11 text-center text-lg font-semibold border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50"
-                  />
-                ))}
-              </div>
-            </div>
-
-            {error && <div className="text-sm text-red-600 text-center">{error}</div>}
-
-            <button
-              type="submit"
-              disabled={otp.some(d => d === '') || busy}
-              className="w-full py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-md text-sm font-medium disabled:opacity-50"
-            >
-              {busy ? 'Verifying...' : 'Verify'}
-            </button>
-
-            <button
-              type="button"
-              onClick={goBack}
-              disabled={busy}
-              className="w-full py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm font-medium disabled:opacity-50"
-            >
-              Back
-            </button>
-
-            <div className="text-center text-xs text-gray-500">
-              {countdown > 0
-                ? `Resend in ${countdown}s`
-                : (
-                  <button
-                    type="button"
-                    onClick={handleResend}
-                    disabled={busy}
-                    className="text-brand-600 hover:text-brand-700 font-medium disabled:opacity-50"
-                  >
-                    Resend OTP
-                  </button>
-                )}
-            </div>
-          </form>
-        )}
       </div>
     </div>
   )

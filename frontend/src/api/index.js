@@ -2,6 +2,7 @@ import axios from 'axios'
 
 const baseURL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const TOKEN_KEY = 'alok_lms_token'
+const REFRESH_KEY = 'alok_lms_refresh'
 
 const api = axios.create({
   baseURL,
@@ -16,15 +17,64 @@ api.interceptors.request.use((config) => {
   return config
 })
 
-// Bounce to /login on 401
+// Auto-refresh on 401, then retry the original request once
+let isRefreshing = false
+let refreshQueue = []
+
 api.interceptors.response.use(
   (r) => r,
-  (err) => {
-    if (err.response?.status === 401) {
-      localStorage.removeItem(TOKEN_KEY)
-      localStorage.removeItem('alok_lms_user')
-      if (window.location.pathname !== '/login') {
-        window.location.href = '/login'
+  async (err) => {
+    const original = err.config
+    if (err.response?.status === 401 && !original._retry) {
+      // Don't try to refresh the refresh call itself
+      if (original.url === '/auth/refresh') {
+        localStorage.removeItem(TOKEN_KEY)
+        localStorage.removeItem(REFRESH_KEY)
+        localStorage.removeItem('alok_lms_user')
+        if (window.location.pathname !== '/login') window.location.href = '/login'
+        return Promise.reject(err)
+      }
+
+      const refreshToken = localStorage.getItem(REFRESH_KEY)
+      if (!refreshToken) {
+        localStorage.removeItem(TOKEN_KEY)
+        localStorage.removeItem('alok_lms_user')
+        if (window.location.pathname !== '/login') window.location.href = '/login'
+        return Promise.reject(err)
+      }
+
+      if (isRefreshing) {
+        // Queue this request until the refresh completes
+        return new Promise((resolve, reject) => {
+          refreshQueue.push({ resolve, reject })
+        }).then(() => {
+          original._retry = true
+          return api(original)
+        })
+      }
+
+      isRefreshing = true
+      original._retry = true
+
+      try {
+        const { data } = await axios.post(`${baseURL}/auth/refresh`, { refresh_token: refreshToken })
+        localStorage.setItem(TOKEN_KEY, data.access_token)
+        localStorage.setItem(REFRESH_KEY, data.refresh_token)
+        localStorage.setItem('alok_lms_user', JSON.stringify(data.user))
+        // Retry queued requests
+        refreshQueue.forEach(({ resolve }) => resolve())
+        refreshQueue = []
+        return api(original)
+      } catch (refreshErr) {
+        refreshQueue.forEach(({ reject }) => reject(refreshErr))
+        refreshQueue = []
+        localStorage.removeItem(TOKEN_KEY)
+        localStorage.removeItem(REFRESH_KEY)
+        localStorage.removeItem('alok_lms_user')
+        if (window.location.pathname !== '/login') window.location.href = '/login'
+        return Promise.reject(refreshErr)
+      } finally {
+        isRefreshing = false
       }
     }
     return Promise.reject(err)
@@ -100,15 +150,21 @@ export const ImportAPI = {
 
 export const NotificationsAPI = {
   list:        (params) => api.get('/notifications', { params }).then(r => r.data),
-  unreadCount: (emp_code) => api.get('/notifications/unread-count', { params: { emp_code } }).then(r => r.data),
+  unreadCount: () => api.get('/notifications/unread-count').then(r => r.data),
   markRead:    (id) => api.post(`/notifications/mark-read/${id}`).then(r => r.data),
-  markAllRead: (emp_code) => api.post('/notifications/mark-all-read', null, { params: { emp_code } }).then(r => r.data),
+  markAllRead: () => api.post('/notifications/mark-all-read').then(r => r.data),
 }
 
 export const DuplicatesAPI = {
   stats: () => api.get('/duplicates/stats').then(r => r.data),
   scan:  (params) => api.get('/duplicates/scan', { params }).then(r => r.data),
   merge: (body) => api.post('/duplicates/merge', body).then(r => r.data),
+}
+
+export const CompaniesAPI = {
+  list:      (params) => api.get('/companies', { params }).then(r => r.data),
+  summary:   ()       => api.get('/companies/summary').then(r => r.data),
+  countries: ()       => api.get('/companies/countries').then(r => r.data),
 }
 
 export const AnalyticsAPI = {
